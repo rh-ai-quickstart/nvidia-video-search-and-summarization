@@ -11,6 +11,7 @@
 - [Hardware Requirements](#hardware-requirements)
 - [Quickstart Guide](#quickstart-guide)
 - [OpenShift Deployment](#openshift-deployment)
+- [MLflow Observability](#mlflow-observability)
 - [Known CVEs](#known-cves)
 - [License](#license)
 
@@ -141,6 +142,62 @@ Deploying VSS on OpenShift requires additional configuration to handle security 
 
 - [deploy/helm/openshift-deployment.md](deploy/helm/openshift-deployment.md): Full deployment guide with step-by-step runbook and OpenShift-specific challenges and solutions.
 - [deploy/helm/values-openshift.yaml](deploy/helm/values-openshift.yaml): Helm value overrides for OpenShift compatibility.
+
+#### Validated OpenShift Hardware (NVIDIA LaunchPad)
+
+This deployment was validated on NVIDIA LaunchPad using **2x NVIDIA H100 SXM5 96 GB** GPUs with Multi-Instance GPU (MIG) enabled. All four GPU workloads share the two physical GPUs via MIG slices:
+
+| MIG Slice | VRAM | Workload | GPU |
+|-----------|------|----------|-----|
+| `mig-7g.94gb` | 94 GB | Cosmos-Reason2-8B VLM | GPU 0 (dedicated) |
+| `mig-3g.47gb` | 47 GB | Llama-3.1-8B LLM (nim-llm2) | GPU 1 |
+| `mig-2g.24gb` | 24 GB | VSS pipeline (NVDEC decoding) | GPU 1 |
+| `mig-1g.12gb` | 12 GB | Embedqa (llama-3.2-nv-embedqa-1b-v2) | GPU 1 |
+| `mig-1g.12gb` | 12 GB | Llama-Rerank (llama-nemotron-rerank-1b-v2) | GPU 1 |
+
+GPU 0 is fully consumed by the Cosmos-Reason2-8B VLM (7 of 7 MIG compute instances). GPU 1 is fully consumed by the remaining four workloads (3+2+1+1 = 7 compute instances). See [deploy/helm/openshift-deployment.md](deploy/helm/openshift-deployment.md#tested-hardware) for MIG setup instructions.
+
+#### System Requirements (OpenShift)
+
+- OpenShift 4.12+ with cluster-admin access
+- Red Hat OpenShift AI (RHOAI) operator with KServe model serving configured
+- NVIDIA GPU Operator with MIG support enabled
+- Helm v3.x and OpenShift CLI (`oc`)
+
+## MLflow Observability
+
+VSS on OpenShift is instrumented with [MLflow](https://mlflow.org/) to log per-request pipeline telemetry to a Red Hat OpenShift AI (RHOAI) MLflow tracking server. Every video summarization produces one MLflow run in the `vss-pipeline` experiment.
+
+### What is logged per request
+
+| Category | Data |
+|----------|------|
+| **Parameters** | `request_id`, `video_file`, `stream_id`, `chunk_count`, `enable_chat`, `is_live` |
+| **Metrics** | `e2e_latency_s`, `ca_rag_latency_s`, `avg_vlm_chunk_latency_ms`, `max_vlm_chunk_latency_ms`, `vlm_total_input_tokens`, `vlm_total_output_tokens`, `nim_llm2_input_tokens`, `nim_llm2_output_tokens` |
+| **Artifacts** | `chunk_captions.txt` (per-chunk VLM captions), `final_summary.txt` (aggregated summary) |
+| **Evaluations** | Full nim-llm2 LLM trace (prompt, completion, token counts) via `mlflow.openai.autolog()` |
+
+### How it works
+
+The MLflow integration is applied at pod startup without rebuilding the container image:
+
+1. `start.sh` copies the read-only VSS engine to a writable directory, installs `mlflow>=3.0,<3.1`, and runs `deploy/helm/scripts/apply_mlflow_patches.py`.
+2. The patcher injects four call sites into `via_stream_handler.py` and copies `src/vss-engine/src/mlflow_helper.py` alongside it.
+3. The MLflow run is opened *before* the nim-llm2 summarization call so `mlflow.openai.autolog()` tags the resulting LLM trace with the run ID — making it appear in the **Evaluations** tab in the RHOAI UI.
+4. Token counts are extracted from the autolog span's `mlflow.spanOutputs` JSON attribute and logged as run metrics.
+
+> **Note:** Cosmos VLM calls run in spawned subprocesses and cannot be traced by `mlflow.openai.autolog()`. Only nim-llm2 (in-process) is traced.
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `src/vss-engine/src/mlflow_helper.py` | MLflow helper: init, workspace auth patch, run lifecycle, trace linking, token extraction |
+| `deploy/helm/scripts/apply_mlflow_patches.py` | Pod-startup patcher (idempotent, runs on every restart) |
+| `deploy/helm/mlflow.yaml` | RHOAI MLflow CR — apply once per cluster in `redhat-ods-applications` |
+| `deploy/helm/mlflow-standalone.yaml` | Optional standalone MLflow for development (no auth, port 5000) |
+
+For full setup instructions see [deploy/helm/openshift-deployment.md § MLflow Observability](deploy/helm/openshift-deployment.md#mlflow-observability).
 
 ## Known CVEs
 

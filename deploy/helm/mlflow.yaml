@@ -1,0 +1,24 @@
+######################################################################################################
+# MLflow tracking server deployed via the RHOAI MLflow operator.
+# Namespace: vss  (co-located with the VSS application)
+# Storage:   20 Gi PVC (nfs-client) — SQLite backend + local artifact store
+# Route:     OpenShift Route auto-created by the operator (accessible from browser)
+######################################################################################################
+apiVersion: mlflow.opendatahub.io/v1
+kind: MLflow
+metadata:
+  name: mlflow
+  namespace: redhat-ods-applications
+spec:
+  # PVC-backed storage for both the SQLite tracking DB and artifacts
+  storage:
+    storageClassName: nfs-client
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 20Gi
+  # Serve artifacts directly from the tracking server (no separate artifact store needed)
+  serveArtifacts: true
+  # Two gunicorn workers — enough for the single-node VSS workload
+  workers: 2

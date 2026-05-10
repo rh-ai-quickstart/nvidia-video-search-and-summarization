@@ -17,6 +17,8 @@ nvcf:
 
 openshift:
   enabled: true
+  ai:
+    enabled: true
   # GPU tolerations — update keys to match your cluster's GPU node taints
   # Find your keys: oc get nodes -l nvidia.com/gpu.present=true -o name | xargs -I{} oc describe {} | grep -A1 Taints
   gpuTolerations: &gpu-tolerations
@@ -57,9 +59,10 @@ global:
   # ucfGlobalEnv appends env vars to all pods
   ucfGlobalEnv:
   - name: LLM_MODEL
-    value: meta/llama-3.1-8b-instruct        # chart default: meta/llama-3.1-70b-instruct
+    value: llama3-8b       # matches the InferenceService name
   - name: DISABLE_GUARDRAILS
     value: "true"                              # chart default: false, for 8B LLM to skip guardrails
+
 
 # anyuid SCC — these services require their hardcoded UIDs (Challenge 2)
 arango-db:
@@ -77,72 +80,118 @@ vss:
     create: false
     name: vss-sa
   tolerations: *gpu-tolerations
-  # GPU count — 1 for Llama 8B
+  # mig-2g.24gb for NVDEC video frame decoding — VLM inference is handled by cosmos InferenceService
+  # nvidia.com/gpu overridden to 0: MIG mode is enabled on this node so generic gpu count is 0
   resources:
     limits:
-      nvidia.com/gpu: 1
-
-
-# LLM model configuration
-nim-llm:
-  # GPU count — 1 for Llama 8B, 4 for Llama 70B
-  resources:
-    limits:
-      nvidia.com/gpu: 1
-  tolerations: *gpu-tolerations
-  model:
-    name: meta/llama-3.1-8b-instruct
-  image:
-    repository: nvcr.io/nim/meta/llama-3.1-8b-instruct
-    tag: latest
-  # Security context removal — NIM/NeMo containers work under any UID (Challenge 3)
-  podSecurityContext:
-    runAsUser: null
-    runAsGroup: null
-    fsGroup: null
+      nvidia.com/gpu: 0
+      nvidia.com/mig-2g.24gb: 1
+    requests:
+      nvidia.com/mig-2g.24gb: 1
+  configs:
+    embedding-microservice:
+      address: embedqa-predictor
+      port: 8080
+    nemo-rerank:
+      address: llama-rerank-predictor
+      port: 8080
+    ca_rag_config.yaml:
+      tools:
+        chat_llm:
+          params:
+            base_url: http://llama3-8b-predictor:8080/v1
+            model: llama3-8b
+            max_tokens: 512
+        notification_llm:
+          params:
+            base_url: http://llama3-8b-predictor:8080/v1
+            model: llama3-8b
+            max_tokens: 512
+        summarization_llm:
+          params:
+            base_url: http://llama3-8b-predictor:8080/v1
+            model: llama3-8b
+            max_tokens: 512
+        nvidia_embedding:
+          params:
+            base_url: http://embedqa-predictor:8080/v1
+            model: embedqa
+        nvidia_reranker:
+          params:
+            base_url: http://llama-rerank-predictor:8080/v1
+            model: llama-rerank
+    guardrails_config.yaml:
+      models:
+        - engine: nim
+          model: llama3-8b
+          parameters:
+            base_url: http://llama3-8b-predictor.vss.svc.cluster.local:8080/v1
+          type: main
+        - engine: nim
+          model: embedqa
+          parameters:
+            base_url: http://embedqa-predictor.vss.svc.cluster.local:8080/v1
+          type: embeddings
+  applicationSpecs:
+    vss-deployment:
+      initContainers:
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 milvus-milvus-deployment-milvus-service 19530; do echo
+          waiting for milvus; sleep 2; done
+        image: busybox:1.37
+        imagePullPolicy: IfNotPresent
+        name: check-milvus-up
+      - command:
+        - sh
+        - -c
+        - until nc -z -w 2 neo-4-j-service 7687; do echo waiting for neo4j; sleep
+          2; done
+        image: busybox:1.37
+        imagePullPolicy: IfNotPresent
+        name: check-neo4j-up
+      - args:
+        - "while ! curl -s -f -o /dev/null http://llama3-8b-predictor:8080/health;\n  do\n  echo \"Waiting for LLM...\"\n  sleep 2\ndone\n"
+        command:
+        - sh
+        - -c
+        image: curlimages/curl:8.17.0
+        name: check-llm-up
+      volumes:
+      - name: mlflow-patches-volume
+        configMap:
+          name: vss-mlflow-patches-cm
+      containers:
+        vss:
+          env:
+          - name: VLM_MODEL_TO_USE
+            value: openai-compat
+          - name: NUM_GPUS
+            value: "1"
+          - name: VIA_VLM_ENDPOINT
+            value: http://cosmos-predictor:8080/v1
+          - name: VIA_VLM_OPENAI_MODEL_DEPLOYMENT_NAME
+            value: cosmos
+          - name: VIA_VLM_API_KEY
+            value: empty
+          - name: OPENAI_API_KEY
+            value: empty
+          - name: MLFLOW_TRACKING_URI
+            value: https://mlflow.redhat-ods-applications.svc.cluster.local:8443
+          - name: MLFLOW_WORKSPACE
+            value: default
+          - name: MLFLOW_EXPERIMENT_NAME
+            value: vss-pipeline
+          volumeMounts:
+          - name: mlflow-patches-volume
+            mountPath: /opt/mlflow-patches
 
 nemo-embedding:
-  tolerations: *gpu-tolerations
-  applicationSpecs:
-    embedding-deployment:
-      securityContext:
-        runAsUser: null
-        runAsGroup: null
-        fsGroup: null
-      containers:
-        embedding-container:
-          env:
-          - name: TOKENIZERS_PARALLELISM  # Prevents Rayon thread pool burst (Challenge 8)
-            value: "false"
-  extraPodVolumes:
-  - name: dshm  # Triton needs >64MB /dev/shm (Challenge 6)
-    emptyDir:
-      medium: Memory
-      sizeLimit: 2Gi
-  extraPodVolumeMounts:
-  - name: dshm
-    mountPath: /dev/shm
+  enabled: false
 
 nemo-rerank:
-  tolerations: *gpu-tolerations
-  applicationSpecs:
-    ranking-deployment:
-      securityContext:
-        runAsUser: null
-        runAsGroup: null
-      containers:
-        ranking-container:
-          env:
-          - name: TOKENIZERS_PARALLELISM
-            value: "false"
-  extraPodVolumes:
-  - name: dshm
-    emptyDir:
-      medium: Memory
-      sizeLimit: 2Gi
-  extraPodVolumeMounts:
-  - name: dshm
-    mountPath: /dev/shm
+  enabled: false
 
 # Writable storage — OpenShift random UID can't own image dirs (Challenge 1)
 milvus-minio:

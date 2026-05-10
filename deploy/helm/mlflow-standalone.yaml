@@ -1,0 +1,136 @@
+######################################################################################################
+# Standalone MLflow Tracking Server — vss namespace
+#
+# Deployed as a regular Kubernetes workload (not via the RHOAI MLflow operator).
+# The RHOAI operator's MLflow uses a workspace-aware auth model intended for
+# data science projects; this standalone instance is purpose-built for the VSS
+# application pipeline logging with no auth overhead.
+#
+# Storage  : 20 Gi PVC (nfs-client) for SQLite tracking DB + artifact store
+# Access   : ClusterIP service (http://vss-mlflow:5000 inside the cluster)
+#            OpenShift Route for browser UI access
+######################################################################################################
+
+# ── PersistentVolumeClaim ──────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vss-mlflow-pvc
+  namespace: vss
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 20Gi
+---
+# ── Deployment ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vss-mlflow
+  namespace: vss
+  labels:
+    app: vss-mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vss-mlflow
+  template:
+    metadata:
+      labels:
+        app: vss-mlflow
+    spec:
+      # Run as the OpenShift-assigned UID range for the vss namespace
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v3.0.0
+          imagePullPolicy: IfNotPresent
+          command:
+            - mlflow
+            - server
+            - --backend-store-uri=sqlite:////mlflow/mlflow.db
+            - --artifacts-destination=/mlflow/artifacts
+            - --host=0.0.0.0
+            - --port=5000
+            - --serve-artifacts
+            - --gunicorn-opts=--timeout 120
+          # NOTE: do NOT add --default-artifact-root when using --serve-artifacts;
+          # they are mutually exclusive. With --serve-artifacts, the server
+          # automatically uses mlflow-artifacts:/ as the artifact root URI.
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - name: mlflow-storage
+              mountPath: /mlflow
+      volumes:
+        - name: mlflow-storage
+          persistentVolumeClaim:
+            claimName: vss-mlflow-pvc
+---
+# ── ClusterIP Service ──────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: vss-mlflow
+  namespace: vss
+  labels:
+    app: vss-mlflow
+spec:
+  selector:
+    app: vss-mlflow
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+      protocol: TCP
+  type: ClusterIP
+---
+# ── OpenShift Route (browser UI) ───────────────────────────────────────────
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: vss-mlflow
+  namespace: vss
+  labels:
+    app: vss-mlflow
+spec:
+  to:
+    kind: Service
+    name: vss-mlflow
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

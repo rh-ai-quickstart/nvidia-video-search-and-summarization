@@ -11,6 +11,7 @@ This guide covers deploying the [NVIDIA Video Search and Summarization (VSS) v2.
 - [Configuration Reference](#configuration-reference)
 - [Deployment](#deployment)
 - [Model Size Optimization](#model-size-optimization)
+- [MLflow Observability](#mlflow-observability)
 - [OpenShift-Specific Challenges and Solutions](#openshift-specific-challenges-and-solutions)
 - [Deployment Files](#deployment-files)
 
@@ -39,9 +40,10 @@ The Helm chart deploys 11 pods. Four require GPUs (`vss`, `nim-llm`, `nemo-embed
 ## OpenShift Overlay Strategy
 
 1. We introduced an `openshift.enabled` flag in the pre-existing [`values.yaml`](nvidia-blueprint-vss-2.4.1.tgz) file. This is the only non-additive change we made on top of the NVIDIA upstream codebase.
-2. All the values and resources required for the OpenShift deployment are placed in two dedicated files: [`values-openshift.yaml`](values-openshift.yaml) and [`templates/openshift.yaml`](nvidia-blueprint-vss-2.4.1.tgz) (inside the chart).
-3. NGC and HuggingFace secrets are created via NVIDIA's built-in `nvcf` mechanism (`templates/nvcf_secrets.yaml`), configured in `values-openshift.yaml`. Service credential secrets (ArangoDB, MinIO, Neo4j) are created by `templates/openshift.yaml` when `openshift.secrets.create` is `true`, or can be created manually before install. ServiceAccount, SCC RoleBinding, and Route are also created by `templates/openshift.yaml`, gated by the `openshift.enabled` flag.
-4. The deployment requires only two files and a single Helm command — no external scripts or separate OpenShift directory. See the [Deployment](#deployment) section below.
+2. We added OpenShift AI model serving resources to run GPU models as KServe `InferenceService` instead of basic pods. These are enabled via `openshift.ai.enabled` in `values-openshift.yaml`.
+3. All the values and resources required for the OpenShift deployment are placed in two dedicated files: [`values-openshift.yaml`](values-openshift.yaml) and [`templates/openshift.yaml`](nvidia-blueprint-vss-2.4.1.tgz) (inside the chart), as well as [`templates/openshift-ai.yaml`](nvidia-blueprint-vss-2.4.1.tgz) for OpenShift AI resources.
+4. NGC and HuggingFace secrets are created via NVIDIA's built-in `nvcf` mechanism (`templates/nvcf_secrets.yaml`), configured in `values-openshift.yaml`. Service credential secrets (ArangoDB, MinIO, Neo4j) are created by `templates/openshift.yaml` when `openshift.secrets.create` is `true`, or can be created manually before install. ServiceAccount, SCC RoleBinding, and Route are also created by `templates/openshift.yaml`, gated by the `openshift.enabled` flag.
+5. The deployment requires only two files and a single Helm command — no external scripts or separate OpenShift directory. See the [Deployment](#deployment) section below.
 
 ---
 
@@ -49,28 +51,86 @@ The Helm chart deploys 11 pods. Four require GPUs (`vss`, `nim-llm`, `nemo-embed
 
 This deployment was validated on the following cluster configuration:
 
-**Cluster:** OpenShift 4.19 on AWS (us-east-2)
+**Cluster:** OpenShift 4.18 on NVIDIA LaunchPad (on-premises bare metal)
 
-### GPU nodes
+### GPU node
 
-| Instance Type | GPU | VRAM | vCPU | RAM | Count | Role in VSS |
-|---------------|-----|------|------|-----|-------|-------------|
-| `g6e.2xlarge` | 1x NVIDIA L40S | 46 GB | 8 | 64 GiB | 2 | VLM (Cosmos-Reason2-8B), nemo-rerank (1 GPU each) |
-| `p4d.24xlarge` | 8x NVIDIA A100 40GB | 40 GB each | 96 | 1.1 TiB | 1 | nim-llm (Llama 8B), nemo-embedding (2 of 8 GPUs used) |
+| GPU | VRAM | Count | MIG enabled |
+|-----|------|-------|-------------|
+| NVIDIA H100 SXM5 96GB | 96 GB each | 2 | Yes |
+
+All four GPU workloads (Cosmos VLM, llama3-8b LLM, embedqa, llama-rerank) run on two physical H100 SXM5 96GB GPUs using **Multi-Instance GPU (MIG)**. MIG partitions each physical GPU into isolated slices, each with dedicated memory and compute, so multiple model serving containers can share the same GPU without memory contention.
+
+### MIG configuration
+
+The two H100 GPUs are configured as follows:
+
+**GPU 0 — VLM only:**
+
+| MIG slice | VRAM | Workload |
+|-----------|------|----------|
+| `1x mig-7g.94gb` | 94 GB | Cosmos-Reason2-8B VLM (`cosmos` InferenceService) |
+
+**GPU 1 — LLM + embedding + rerank + VSS pipeline:**
+
+| MIG slice | VRAM | Workload |
+|-----------|------|----------|
+| `1x mig-3g.47gb` | 47 GB | Llama-3.1-8B LLM (`llama3-8b` InferenceService) |
+| `1x mig-2g.24gb` | 24 GB | VSS pipeline pod (NVDEC video frame decoding) |
+| `1x mig-1g.12gb` | 12 GB | Embedqa (`embedqa` InferenceService) |
+| `1x mig-1g.12gb` | 12 GB | Llama-NemoTron-Rerank-1B (`llama-rerank` InferenceService) |
+
+> **Note:** The `mig-7g.94gb` slice occupies all 7 compute instances of one GPU — no other workload can share it. The second GPU's slices (3+2+1+1 = 7 compute instances) also fill that GPU completely. This leaves zero spare GPU capacity; adding workloads requires additional GPU hardware.
+
+### Configuring MIG on H100 SXM5
+
+MIG must be enabled before deploying VSS. On the node running the H100s:
+
+```bash
+# Enable MIG mode on both GPUs (requires root; node reboot may be needed)
+nvidia-smi -i 0 --mig-mode=Enabled
+nvidia-smi -i 1 --mig-mode=Enabled
+
+# GPU 0: one full 7g.94gb instance
+nvidia-smi mig -i 0 -cgi 0 -C   # creates 1x 7g.94gb + 1x compute instance
+
+# GPU 1: 3g.47gb + 2g.24gb + 2x 1g.12gb
+nvidia-smi mig -i 1 -cgi 9,15,19,19 -C
+# Profile IDs: 9=3g.47gb, 15=2g.24gb, 19=1g.12gb (verify with: nvidia-smi mig -lgip)
+```
+
+If deploying on OpenShift with the NVIDIA GPU Operator, configure MIG via the `ClusterPolicy`:
+
+```yaml
+# In the GPU Operator ClusterPolicy
+mig:
+  strategy: mixed   # allows different slice sizes on the same node
+```
+
+Then label nodes with the desired MIG profile per device:
+
+```bash
+oc label node <gpu-node> nvidia.com/mig.config=all-disabled   # reset first
+oc label node <gpu-node> nvidia.com/mig.config=custom          # then apply custom
+```
+
+For more detail see the [NVIDIA MIG User Guide](https://docs.nvidia.com/datacenter/tesla/mig-user-guide/) and the [GPU Operator MIG documentation](https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/gpu-operator-mig.html).
 
 ### Worker nodes (non-GPU)
 
-| Instance Type | vCPU | RAM | Count | Role in VSS |
-|---------------|------|-----|-------|-------------|
-| `m6i.2xlarge` | 8 | 32 GiB | 5 | Milvus, MinIO, etcd, Elasticsearch, ArangoDB, Neo4j |
+| vCPU | RAM | Count | Role in VSS |
+|------|-----|-------|-------------|
+| 32+ | 64+ GiB | 3+ | Milvus, MinIO, etcd, Elasticsearch, ArangoDB, Neo4j |
 
 ### Minimum hardware for reproduction
 
 Any cluster with the following should work:
 
-- **4 GPUs** with at least **40 GB VRAM** each (L40S, A100, or equivalent) — one each for VLM, nim-llm, nemo-embedding, nemo-rerank. NVIDIA A10G (22 GB) is **not sufficient** — the VLM (Cosmos-Reason2-8B) requires ~22 GiB for model weights + KV cache, exceeding available memory
-- **~1 CPU core** and **~17 GiB RAM** across worker nodes for non-GPU pods (Elasticsearch alone requests 16 GiB)
-- To run **Llama 70B** instead of 8B, nim-llm requires **4 GPUs on a single node** (tensor parallelism cannot span nodes), plus 2 GPUs for the VLM (upstream default), for a total of **8 GPUs**. NVIDIA recommends A100 **80GB** or higher for 70B. Edit `values-openshift.yaml`: `nim-llm.model.name`, `nim-llm.image.repository`, `nim-llm.resources.limits.nvidia.com/gpu=4`, `vss.resources.limits.nvidia.com/gpu=2`, `global.ucfGlobalEnv[0].value`. See NVIDIA's [supported platforms](https://docs.nvidia.com/vss/latest/content/supported_platforms.html#supported-platforms) for validated GPU topologies
+- **2x H100 SXM5 96GB** (or equivalent ≥96 GB GPU) with MIG configured exactly as above. The Cosmos-Reason2-8B VLM alone requires ~85 GB VRAM at `gpu-memory-utilization=0.93`; a 7g.94gb MIG slice (94 GB) is the minimum that fits it.
+- As an alternative without MIG, **4 separate GPUs** each with ≥48 GB VRAM (e.g. L40S 46 GB is marginal for the VLM) can work with appropriate `resources` overrides in `values-openshift.yaml`.
+- NVIDIA A10G (22 GB) is **not sufficient** for the VLM.
+- **~64 GiB RAM** and **~32 vCPU** across worker nodes for non-GPU pods (Elasticsearch alone requests 16 GiB).
+- To run **Llama 70B** instead of 8B, the `llama3-8b` InferenceService requires a `3g.47gb` slice at minimum but will be slow; a dedicated 4-GPU node with A100 80GB or higher is recommended. Edit `values-openshift.yaml`: update `llama3-8b` InferenceService resources and `global.ucfGlobalEnv[0].value`. See NVIDIA's [supported platforms](https://docs.nvidia.com/vss/latest/content/supported_platforms.html#supported-platforms) for validated GPU topologies.
 
 ---
 
@@ -78,6 +138,7 @@ Any cluster with the following should work:
 
 - OpenShift CLI (`oc`) 4.12+ installed and authenticated with cluster-admin privileges
 - Helm 3.x installed
+- Red Hat OpenShift AI (RHOAI) operator installed on the cluster and configured for model serving (KServe)
 - NVIDIA GPU Operator installed on the cluster and `nvidia.com/gpu` resource is allocatable
 - NGC API key from [NGC](https://org.ngc.nvidia.com/setup/api-keys) or [build.nvidia.com](https://build.nvidia.com/) (requires NVIDIA AI Enterprise license)
 - HuggingFace token with the [Cosmos-Reason2-8B license](https://huggingface.co/nvidia/Cosmos-Reason2-8B) accepted
@@ -250,9 +311,9 @@ All pods should reach `Running 1/1`. GPU pods (`nim-llm`, `nemo-embedding`, `nem
 | Pod | Purpose | GPU |
 |-----|---------|-----|
 | `vss-vss-deployment` | Core pipeline + VLM (Cosmos-Reason2-8B) | Yes |
-| `nim-llm` | LLM inference (Llama 8B/70B) | Yes |
-| `nemo-embedding` | Vector embedding generation | Yes |
-| `nemo-rerank` | Document reranking | Yes |
+| `nim-llm-predictor-default-*` | LLM inference (Llama 8B/70B) via OpenShift AI | Yes |
+| `nemo-embedding-predictor-default-*` | Vector embedding generation via OpenShift AI | Yes |
+| `nemo-rerank-predictor-default-*` | Document reranking via OpenShift AI | Yes |
 | `milvus-milvus-deployment` | Vector database | No |
 | `milvus-minio-*` | Object storage for Milvus | No |
 | `etcd-*` | Milvus metadata store | No |
@@ -314,6 +375,104 @@ Configuration in `values-openshift.yaml`:
 2. **VLM GPU count** — `vss.resources.limits.nvidia.com/gpu` overrides the default 2-GPU request. The quantized `int4_awq` model fits on a single GPU.
 
 Changing the LLM model also requires updating the model name in multiple locations - see [Challenge 10](#10-llm-model-name-consistency) for details.
+
+---
+
+## MLflow Observability
+
+VSS is instrumented with MLflow to record per-request pipeline telemetry in the RHOAI MLflow UI. Every video summarization request produces one MLflow run containing metrics, artifacts, and a linked LLM trace.
+
+### Architecture
+
+```
+VSS pod (vss-vss-deployment)
+├── mlflow_helper.py          ← helper injected at startup by apply_mlflow_patches.py
+├── via_stream_handler.py     ← patched in-place at pod startup to call the helper
+│   ├── start_request_run()   ← opens MLflow run BEFORE _get_aggregated_summary()
+│   └── end_request_run()     ← logs metrics/artifacts, links llama3-8b trace, ends run
+└── mlflow.openai.autolog()   ← auto-traces llama3-8b summarization calls
+                                 (cosmos VLM runs in spawned subprocesses — not traceable)
+
+RHOAI MLflow server (redhat-ods-applications namespace)
+└── Workspace: default  →  Experiment: vss-pipeline
+    └── Per-request Run
+        ├── Parameters: request_id, video_file, chunk_count, enable_chat, is_live
+        ├── Metrics:    e2e_latency_s, ca_rag_latency_s,
+        │               avg/max_vlm_chunk_latency_ms,
+        │               vlm_total_input/output_tokens,
+        │               nim_llm2_input/output_tokens
+        ├── Artifacts:  chunk_captions.txt, final_summary.txt
+        └── Evaluations tab: llama3-8b trace (full prompt + completion + token counts)
+```
+
+### How it works
+
+1. **Startup patch** — `start.sh` (in `vss-scripts-cm`) copies the read-only `/opt/nvidia/via/via-engine` to a writable `/tmp/via/via-engine`, installs `mlflow>=3.0,<3.1`, then runs `apply_mlflow_patches.py`. The patcher injects four call sites into `via_stream_handler.py` and copies `mlflow_helper.py` alongside it — idempotent on every pod restart.
+
+2. **Run lifecycle** — `start_request_run()` is called *before* `_get_aggregated_summary()` so the llama3-8b OpenAI call fires inside an active MLflow run. `mlflow.openai.autolog()` captures that call as a Trace. `end_request_run()` then links the trace to the run via the `POST /api/2.0/mlflow/traces/link-to-run` REST endpoint and extracts token counts from the trace's `mlflow.spanOutputs` span attribute.
+
+3. **RHOAI workspace auth** — The RHOAI MLflow server requires an `X-MLFLOW-WORKSPACE` header on every request. `mlflow_helper.py` monkey-patches both `mlflow.utils.rest_utils.http_request` and `requests.Session.request` to inject this header automatically. The Kubernetes service account token (`/var/run/secrets/kubernetes.io/serviceaccount/token`) is used as the Bearer token.
+
+4. **Server-side fixes** — The RHOAI MLflow server has two bugs in the validated version that require patches applied via a `sitecustomize.py` on the MLflow PVC:
+   - **Missing trace REST endpoints** — `PATH_AUTHORIZATION_RULES` was missing all `/api/2.0/mlflow/traces/*` paths, blocking autolog trace uploads. Fixed by extending the authorization rules map.
+   - **False-positive experiment conflict** — `_validate_artifact_isolation_constraints` raised `MlflowException` for workspace-owned experiments. Fixed by adding `.filter(workspace IS NULL)` to exclude them from the collision check. The patch must be applied to **both** `SqlAlchemyStore` and its subclass `WorkspaceAwareSqlAlchemyStore` since the subclass overrides the method.
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `src/vss-engine/src/mlflow_helper.py` | Core helper: init, HTTP patch, run lifecycle, trace linking, token extraction |
+| `deploy/helm/scripts/apply_mlflow_patches.py` | Startup patcher: copies helper, patches `via_stream_handler.py` in-place (4 patches, idempotent) |
+| `deploy/helm/mlflow.yaml` | RHOAI MLflow CR (`redhat-ods-applications`, 20 Gi PVC, `PYTHONPATH=/mlflow/python-patches`) |
+| `deploy/helm/mlflow-standalone.yaml` | Optional standalone MLflow (port 5000, no auth) for development/testing |
+
+### Deploying the MLflow server
+
+Apply the RHOAI MLflow CR once per cluster. This requires cluster-admin or the RHOAI operator to be installed:
+
+```bash
+oc apply -f deploy/helm/mlflow.yaml
+```
+
+The operator creates the MLflow deployment in `redhat-ods-applications`. Apply the server-side bug fixes to the PVC (required for trace upload to work):
+
+```bash
+# Copy sitecustomize.py to the MLflow PVC via an ephemeral pod
+# See the RHOAI MLflow server-side fix details above for the full patch content
+oc exec -n redhat-ods-applications deployment/mlflow -- \
+  bash -c "cat > /mlflow/python-patches/sitecustomize.py" < sitecustomize.py
+
+# Restart the MLflow pod to pick up PYTHONPATH=/mlflow/python-patches
+oc rollout restart deployment/mlflow -n redhat-ods-applications
+```
+
+Grant the `vss-sa` service account access to read MLflow experiments in the `default` workspace:
+
+```bash
+oc apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mlflow-experiments-role
+  namespace: default
+rules:
+- apiGroups: ["mlflow.kubeflow.org"]
+  resources: ["experiments"]
+  verbs: ["get", "list", "create", "update", "delete", "patch"]
+EOF
+oc create rolebinding vss-sa-mlflow -n default \
+  --role=mlflow-experiments-role --serviceaccount=vss:vss-sa
+```
+
+The `vss-mlflow-patches-cm` ConfigMap (containing `mlflow_helper.py` and `apply_mlflow_patches.py`) must exist in the `vss` namespace before installing the Helm chart:
+
+```bash
+oc create configmap vss-mlflow-patches-cm -n vss \
+  --from-file=mlflow_helper.py=src/vss-engine/src/mlflow_helper.py \
+  --from-file=apply_mlflow_patches.py=deploy/helm/scripts/apply_mlflow_patches.py
+```
+
+> **Cosmos VLM traces are not captured.** Cosmos runs in spawned subprocesses (`multiprocessing.get_context("spawn")`). Python's `mlflow.openai.autolog()` monkey-patch does not carry across `spawn` boundaries. Only the llama3-8b summarization call (which runs in the main process) is traced.
 
 ---
 
@@ -567,6 +726,16 @@ The LLM model name is hardcoded in three independent locations within the chart.
 
 All OpenShift customizations are codified in the `deploy/helm/` directory alongside the upstream chart:
 
-- **`values-openshift.yaml`** - Helm values overlay for OpenShift. Contains all OpenShift-specific overrides (security contexts, tolerations, secrets, model config, storage).
-- **`templates/openshift.yaml`** (inside the chart) - Helm template gated by `openshift.enabled`. Creates ServiceAccount, RoleBinding (anyuid SCC), Route, and secrets.
-- **`nvidia-blueprint-vss-2.4.1.tgz`** - The packaged upstream Helm chart with the `openshift.enabled` flag added to `values.yaml`.
+| File | Description |
+|------|-------------|
+| `nvidia-blueprint-vss-2.4.1.tgz` | Packaged Helm chart with all OpenShift customizations baked in. This is what `helm upgrade --install` uses. |
+| `nvidia-blueprint-vss/` | Unpacked chart source (edit here, then repack with `tar -czf nvidia-blueprint-vss-2.4.1.tgz nvidia-blueprint-vss`). |
+| `values-openshift.yaml` | Helm values overlay — all OpenShift-specific overrides: security contexts, MIG GPU resources, tolerations, secrets, model endpoints, MLflow env vars, and OpenShift AI. |
+| `nvidia-blueprint-vss/templates/openshift.yaml` | Helm template (gated by `openshift.enabled`). Creates ServiceAccount, RoleBinding (anyuid SCC), Route, and service credential secrets. |
+| `nvidia-blueprint-vss/templates/openshift-ai.yaml` | Helm template (gated by `openshift.ai.enabled`). Creates PVCs, model download Jobs, `InferenceService`, and `ServingRuntime` resources for all four GPU models. |
+| `is-sr.yaml` | Reference YAML: standalone `InferenceService` + `ServingRuntime` definitions for all four models. Useful for manually applying or inspecting individual model serving configs. |
+| `job-pvc.yaml` | Reference YAML: standalone PVC + Job definitions for model weight downloads. Useful for pre-populating PVCs outside of Helm. |
+| `mlflow.yaml` | RHOAI MLflow CR (`mlflow.opendatahub.io/v1`) applied in `redhat-ods-applications`. Creates the MLflow tracking server with 20 Gi PVC. |
+| `mlflow-standalone.yaml` | Optional standalone MLflow server in the `vss` namespace (port 5000, no auth). For development and testing without RHOAI. |
+| `scripts/apply_mlflow_patches.py` | Startup patcher run by `start.sh` on every pod restart. Injects MLflow instrumentation into `via_stream_handler.py`. |
+| `scripts/override_remote_endpoints.sh` | Upstream utility script for generating a values override when using remote NIM endpoints instead of local KServe InferenceServices. |

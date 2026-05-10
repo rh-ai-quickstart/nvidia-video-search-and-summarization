@@ -1,0 +1,614 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: llama-rerank
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: llama-rerank
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--trust-remote-code'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '12'
+          memory: 24Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '4'
+          memory: 18Gi
+          nvidia.com/gpu: '1'
+      runtime: llama-rerank
+      storageUri: 'pvc://nemotron-rerank-pvc/'
+--
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: llama-rerank
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.1'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+--
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: embedqa
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: embedqa
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    imagePullSecrets:
+      - name: embedqa
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--trust-remote-code'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '12'
+          memory: 24Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '4'
+          memory: 18Gi
+          nvidia.com/gpu: '1'
+      runtime: embedqa
+      storageUri: 'pvc://embedqa-1b-v2-pvc/'
+--
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: embedqa
+  uid: 90d6415b-4280-4011-b8c6-5a0170809462
+  creationTimestamp: '2026-05-07T12:40:29Z'
+  generation: 2
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.1'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+--
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: cosmos
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: cosmos
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--trust-remote-code'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '8'
+          memory: 32Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '4'
+          memory: 24Gi
+          nvidia.com/gpu: '1'
+      runtime: cosmos
+      storageUri: 'pvc://cosmos-pvc/'
+--
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: cosmos
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9@sha256:ec799bb5eeb7e25b4b25a8917ab5161da6b6f1ab830cbba61bba371cffb0c34d'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+--
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: nim-llm2
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: nim-llm2
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    imagePullSecrets:
+      - name: ngc-docker-reg-secret
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '16'
+          memory: 32Gi
+          nvidia.com/gpu: '1'
+        requests:
+          cpu: '4'
+          memory: 24Gi
+          nvidia.com/gpu: '1'
+      runtime: nim-llm2
+      storageUri: 'pvc://llama-pvc/'
+--
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/gpu"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: nim-llm2
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhoai/odh-vllm-cuda-rhel9@sha256:9302ffc252b8681317b4d40ce8b4e66a5db3511f08f6a1ff6d34e595023f85c5'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLMapiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-llama3-copy
+spec:
+  template:
+    spec:
+      containers:
+      - name: copy-model
+        # Use the target model image itself
+        image: 'quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Copying model weights from container to PVC..."
+          cp -a /models/. /mnt/pvc/
+          echo "Done. Contents of PVC:"
+          ls -lh /mnt/pvc/
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: llama3-pvc
+--          
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama3-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+--
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-nemotron-rerank
+spec:
+  template:
+    spec:
+      containers:
+      - name: downloader
+        image: 'registry.redhat.io/ubi9/python-311'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Use python3 directly from the PATH
+          python3 -c "
+          import os
+          try:
+              from huggingface_hub import snapshot_download
+          except ImportError:
+              import subprocess
+              subprocess.check_call(['pip', 'install', '--quiet', 'huggingface_hub'])
+              from huggingface_hub import snapshot_download
+
+          repo_id = 'nvidia/llama-nemotron-rerank-1b-v2'
+          local_dir = '/mnt/pvc'
+          token = os.getenv('HF_TOKEN')
+
+          print(f'Starting download for {repo_id}...')
+          try:
+              snapshot_download(
+                  repo_id=repo_id,
+                  local_dir=local_dir,
+                  token=token,
+                  local_dir_use_symlinks=False
+              )
+              print(f'Success! Weights downloaded to {local_dir}')
+              print('Files in PVC:', os.listdir(local_dir))
+          except Exception as e:
+              print(f'Download failed: {e}')
+              exit(1)
+          "
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: nemotron-rerank-pvc
+--     
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nemotron-rerank-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+--
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-embedqa-1b-v2
+spec:
+  template:
+    spec:
+      containers:
+      - name: downloader
+        image: 'registry.redhat.io/ubi9/python-311'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Use python3 directly from the PATH
+          python3 -c "
+          import os
+          try:
+              from huggingface_hub import snapshot_download
+          except ImportError:
+              import subprocess
+              subprocess.check_call(['pip', 'install', '--quiet', 'huggingface_hub'])
+              from huggingface_hub import snapshot_download
+
+          repo_id = 'nvidia/llama-3.2-nv-embedqa-1b-v2'
+          local_dir = '/mnt/pvc'
+          token = os.getenv('HF_TOKEN')
+
+          print(f'Starting download for {repo_id}...')
+          try:
+              snapshot_download(
+                  repo_id=repo_id,
+                  local_dir=local_dir,
+                  token=token,
+                  local_dir_use_symlinks=False
+              )
+              print(f'Success! Weights downloaded to {local_dir}')
+              print('Files in PVC:', os.listdir(local_dir))
+          except Exception as e:
+              print(f'Download failed: {e}')
+              exit(1)
+          "
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: embedqa-1b-v2-pvc
+--
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embedqa-1b-v2-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+      
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-cosmos-reason2-8B
+spec:
+  template:
+    spec:
+      containers:
+      - name: downloader
+        image: 'registry.redhat.io/ubi9/python-311'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Use python3 directly from the PATH
+          python3 -c "
+          import os
+          try:
+              from huggingface_hub import snapshot_download
+          except ImportError:
+              import subprocess
+              subprocess.check_call(['pip', 'install', '--quiet', 'huggingface_hub'])
+              from huggingface_hub import snapshot_download
+
+          repo_id = 'nvidia/Cosmos-Reason2-8B'
+          local_dir = '/mnt/pvc'
+          token = os.getenv('HF_TOKEN')
+
+          print(f'Starting download for {repo_id}...')
+          try:
+              snapshot_download(
+                  repo_id=repo_id,
+                  local_dir=local_dir,
+                  token=token,
+                  local_dir_use_symlinks=False
+              )
+              print(f'Success! Weights downloaded to {local_dir}')
+              print('Files in PVC:', os.listdir(local_dir))
+          except Exception as e:
+              print(f'Download failed: {e}')
+              exit(1)
+          "
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: cosmos-pvc
+--          
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cosmos-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+      
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-inspector
+spec:
+  containers:
+  - name: inspector
+    image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+    command: ["sleep", "infinity"]
+    volumeMounts:
+    - name: data
+      mountPath: /mnt/pvc
+  volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: cosmos-pvc

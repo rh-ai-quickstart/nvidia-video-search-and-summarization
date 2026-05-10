@@ -49,6 +49,7 @@ from utils import MediaFileInfo, process_highlight_request
 from via_exception import ViaException
 from via_health_eval import GPUMonitor, RequestHealthMetrics
 from via_logger import TimeMeasure, logger
+from mlflow_helper import init_mlflow, log_request as mlflow_log_request
 from vss_api_models import (
     DEFAULT_CALLBACK_JSON_TEMPLATE,
     ReviewAlertRequest,
@@ -570,6 +571,7 @@ class ViaStreamHandler:
         self._via_health_eval = False
         self.first_init = True
         self._start_ca_rag_alert_handler()
+        init_mlflow()
 
         self.default_caption_prompt = self._args.summarization_query
         self._ctx_mgr_pool = []
@@ -841,6 +843,7 @@ class ViaStreamHandler:
                 req_info.end_time = time.time()
                 self.stop_via_gpu_monitor(req_info, chunk_responses)
                 req_info.status = RequestInfo.Status.SUCCESSFUL
+                mlflow_log_request(req_info, chunk_responses)
                 cuda.bindings.runtime.cudaProfilerStop()
                 nvtx.end_range(req_info.nvtx_summarization_start)
                 logger.info(
