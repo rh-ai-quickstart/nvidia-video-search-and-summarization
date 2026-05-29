@@ -162,6 +162,9 @@ vss:
       - name: mlflow-patches-volume
         configMap:
           name: vss-mlflow-patches-cm
+      - name: ui-rebrand-volume
+        configMap:
+          name: vss-ui-rebrand-cm
       containers:
         vss:
           env:
@@ -186,6 +189,8 @@ vss:
           volumeMounts:
           - name: mlflow-patches-volume
             mountPath: /opt/mlflow-patches
+          - name: ui-rebrand-volume
+            mountPath: /opt/ui-rebrand
 
 nemo-embedding:
   enabled: false

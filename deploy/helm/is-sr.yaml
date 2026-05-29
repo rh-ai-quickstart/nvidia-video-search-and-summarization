@@ -1,0 +1,378 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: llama-rerank
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: llama-rerank
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--gpu-memory-utilization'
+        - '0.90'
+        - '--max-model-len'
+        - '2048'
+        - '--trust-remote-code'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '12'
+          memory: 24Gi
+          nvidia.com/mig-1g.12gb: '1'
+        requests:
+          cpu: '4'
+          memory: 18Gi
+          nvidia.com/mig-1g.12gb: '1'
+      runtime: llama-rerank
+      storageUri: 'pvc://nemotron-rerank-pvc/'
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/mig-1g.12gb"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: llama-rerank
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.1'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: embedqa
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: embedqa
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    imagePullSecrets:
+      - name: embedqa
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--gpu-memory-utilization'
+        - '0.90'
+        - '--max-model-len'
+        - '2048'
+        - '--trust-remote-code'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '12'
+          memory: 24Gi
+          nvidia.com/mig-1g.12gb: '1'
+        requests:
+          cpu: '4'
+          memory: 18Gi
+          nvidia.com/mig-1g.12gb: '1'
+      runtime: embedqa
+      storageUri: 'pvc://embedqa-1b-v2-pvc/'
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/mig-1g.12gb"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: embedqa
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaii-early-access/vllm-cuda-rhel9:3.4.0-ea.1'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    opendatahub.io/hardware-profile-resource-version: '39169'
+    openshift.io/description: ''
+    openshift.io/display-name: cosmos
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/hardware-profile-namespace: redhat-ods-applications
+    opendatahub.io/hardware-profile-name: gpu
+    opendatahub.io/model-type: generative
+  name: cosmos
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--gpu-memory-utilization'
+        - '0.93'
+        - '--max-model-len'
+        - '28000'
+        - '--trust-remote-code'
+        - '--enable-chunked-prefill'
+        - '--max-num-seqs'
+        - '16'
+        - '--disable-log-requests'
+        - '--async-scheduling'
+        - '--limit-mm-per-prompt'
+        - '{"image":10}'
+        - '--mm-processor-kwargs'
+        - '{"min_pixels":65536,"max_pixels":802816}'
+        - '--mm-processor-cache-gb'
+        - '8'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '8'
+          memory: 48Gi
+          nvidia.com/mig-7g.94gb: '1'
+        requests:
+          cpu: '4'
+          memory: 48Gi
+          nvidia.com/mig-7g.94gb: '1'
+      runtime: cosmos
+      storageUri: 'pvc://cosmos-pvc/'
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/mig-3g.47gb"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: cosmos
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhaiis/vllm-cuda-rhel9@sha256:ec799bb5eeb7e25b4b25a8917ab5161da6b6f1ab830cbba61bba371cffb0c34d'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM
+---
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  annotations:
+    serving.kserve.io/stop: 'false'
+    security.opendatahub.io/enable-auth: 'false'
+    openshift.io/description: ''
+    openshift.io/display-name: llama3-8b
+    serving.kserve.io/deploymentMode: RawDeployment
+    opendatahub.io/model-type: generative
+  name: llama3-8b
+  namespace: vss
+  finalizers:
+    - inferenceservice.finalizers
+    - odh.inferenceservice.finalizers
+  labels:
+    networking.kserve.io/visibility: exposed
+    opendatahub.io/dashboard: 'true'
+spec:
+  predictor:
+    automountServiceAccountToken: false
+    deploymentStrategy:
+      type: Recreate
+    imagePullSecrets:
+      - name: ngc-docker-reg-secret
+    maxReplicas: 1
+    minReplicas: 1
+    model:
+      args:
+        - '--gpu-memory-utilization'
+        - '0.90'
+        - '--max-model-len'
+        - '16384'
+      modelFormat:
+        name: vLLM
+      name: ''
+      resources:
+        limits:
+          cpu: '16'
+          memory: 32Gi
+          nvidia.com/mig-3g.47gb: '1'
+        requests:
+          cpu: '4'
+          memory: 24Gi
+          nvidia.com/mig-3g.47gb: '1'
+      runtime: llama3-8b
+      storageUri: 'pvc://llama3-pvc/'
+---
+apiVersion: serving.kserve.io/v1alpha1
+kind: ServingRuntime
+metadata:
+  annotations:
+    opendatahub.io/apiProtocol: REST
+    opendatahub.io/recommended-accelerators: '["nvidia.com/mig-3g.47gb"]'
+    opendatahub.io/runtime-version: v0.13.0
+    opendatahub.io/serving-runtime-scope: global
+    opendatahub.io/template-display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+    opendatahub.io/template-name: vllm-cuda-runtime-template
+    openshift.io/display-name: vLLM NVIDIA GPU ServingRuntime for KServe
+  name: llama3-8b
+  namespace: vss
+  labels:
+    opendatahub.io/dashboard: 'true'
+spec:
+  annotations:
+    opendatahub.io/kserve-runtime: vllm
+    prometheus.io/path: /metrics
+    prometheus.io/port: '8080'
+  containers:
+    - args:
+        - '--port=8080'
+        - '--model=/mnt/models'
+        - '--served-model-name={{.Name}}'
+      command:
+        - python
+        - '-m'
+        - vllm.entrypoints.openai.api_server
+      env:
+        - name: HF_HOME
+          value: /tmp/hf_home
+      image: 'registry.redhat.io/rhoai/odh-vllm-cuda-rhel9@sha256:9302ffc252b8681317b4d40ce8b4e66a5db3511f08f6a1ff6d34e595023f85c5'
+      name: kserve-container
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+  multiModel: false
+  supportedModelFormats:
+    - autoSelect: true
+      name: vLLM

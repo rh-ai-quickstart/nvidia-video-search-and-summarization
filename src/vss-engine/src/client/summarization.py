@@ -48,9 +48,9 @@ USER_AVATAR_ICON.write(
     pkg_resources.resource_string("__main__", "client/assets/user-icon-60px.png")
 )
 USER_AVATAR_ICON.flush()
-CHATBOT_AVATAR_ICON = tempfile.NamedTemporaryFile()
+CHATBOT_AVATAR_ICON = tempfile.NamedTemporaryFile(suffix=".svg", delete=False)
 CHATBOT_AVATAR_ICON.write(
-    pkg_resources.resource_string("__main__", "client/assets/chatbot-icon-60px.png")
+    pkg_resources.resource_string("__main__", "client/assets/rh-hat.svg")
 )
 CHATBOT_AVATAR_ICON.flush()
 

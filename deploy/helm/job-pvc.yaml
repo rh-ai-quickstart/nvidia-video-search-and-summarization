@@ -1,0 +1,242 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-llama3-copy
+spec:
+  template:
+    spec:
+      containers:
+      - name: copy-model
+        # Use the target model image itself
+        image: 'quay.io/redhat-ai-services/modelcar-catalog:llama-3.1-8b-instruct'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Copying model weights from container to PVC..."
+          cp -a /models/. /mnt/pvc/
+          echo "Done. Contents of PVC:"
+          ls -lh /mnt/pvc/
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: llama3-pvc
+--          
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llama3-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+--
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-nemotron-rerank
+spec:
+  template:
+    spec:
+      containers:
+      - name: downloader
+        image: 'registry.redhat.io/ubi9/python-311'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Use python3 directly from the PATH
+          python3 -c "
+          import os
+          try:
+              from huggingface_hub import snapshot_download
+          except ImportError:
+              import subprocess
+              subprocess.check_call(['pip', 'install', '--quiet', 'huggingface_hub'])
+              from huggingface_hub import snapshot_download
+
+          repo_id = 'nvidia/llama-nemotron-rerank-1b-v2'
+          local_dir = '/mnt/pvc'
+          token = os.getenv('HF_TOKEN')
+
+          print(f'Starting download for {repo_id}...')
+          try:
+              snapshot_download(
+                  repo_id=repo_id,
+                  local_dir=local_dir,
+                  token=token,
+                  local_dir_use_symlinks=False
+              )
+              print(f'Success! Weights downloaded to {local_dir}')
+              print('Files in PVC:', os.listdir(local_dir))
+          except Exception as e:
+              print(f'Download failed: {e}')
+              exit(1)
+          "
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: nemotron-rerank-pvc
+--     
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nemotron-rerank-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+--
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-embedqa-1b-v2
+spec:
+  template:
+    spec:
+      containers:
+      - name: downloader
+        image: 'registry.redhat.io/ubi9/python-311'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Use python3 directly from the PATH
+          python3 -c "
+          import os
+          try:
+              from huggingface_hub import snapshot_download
+          except ImportError:
+              import subprocess
+              subprocess.check_call(['pip', 'install', '--quiet', 'huggingface_hub'])
+              from huggingface_hub import snapshot_download
+
+          repo_id = 'nvidia/llama-3.2-nv-embedqa-1b-v2'
+          local_dir = '/mnt/pvc'
+          token = os.getenv('HF_TOKEN')
+
+          print(f'Starting download for {repo_id}...')
+          try:
+              snapshot_download(
+                  repo_id=repo_id,
+                  local_dir=local_dir,
+                  token=token,
+                  local_dir_use_symlinks=False
+              )
+              print(f'Success! Weights downloaded to {local_dir}')
+              print('Files in PVC:', os.listdir(local_dir))
+          except Exception as e:
+              print(f'Download failed: {e}')
+              exit(1)
+          "
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: embedqa-1b-v2-pvc
+--
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embedqa-1b-v2-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+--     
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: download-cosmos-reason2-8B
+spec:
+  template:
+    spec:
+      containers:
+      - name: downloader
+        image: 'registry.redhat.io/ubi9/python-311'
+        command:
+        - /bin/sh
+        - -c
+        - |
+          # Use python3 directly from the PATH
+          python3 -c "
+          import os
+          try:
+              from huggingface_hub import snapshot_download
+          except ImportError:
+              import subprocess
+              subprocess.check_call(['pip', 'install', '--quiet', 'huggingface_hub'])
+              from huggingface_hub import snapshot_download
+
+          repo_id = 'nvidia/Cosmos-Reason2-8B'
+          local_dir = '/mnt/pvc'
+          token = os.getenv('HF_TOKEN')
+
+          print(f'Starting download for {repo_id}...')
+          try:
+              snapshot_download(
+                  repo_id=repo_id,
+                  local_dir=local_dir,
+                  token=token,
+                  local_dir_use_symlinks=False
+              )
+              print(f'Success! Weights downloaded to {local_dir}')
+              print('Files in PVC:', os.listdir(local_dir))
+          except Exception as e:
+              print(f'Download failed: {e}')
+              exit(1)
+          "
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: HF_TOKEN
+        volumeMounts:
+        - name: model-volume
+          mountPath: /mnt/pvc
+      restartPolicy: Never
+      volumes:
+      - name: model-volume
+        persistentVolumeClaim:
+          claimName: cosmos-pvc
+--          
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cosmos-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi

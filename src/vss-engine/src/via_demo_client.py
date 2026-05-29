@@ -146,7 +146,7 @@ def build_demo(args):
     # need it here for example
 
     with gr.Blocks(
-        title="Video Search and Summarization Agent",
+        title="Red Hat | Video Search and Summarization",
         theme=kui_theme,
         css=kui_styles,
         analytics_enabled=False,
