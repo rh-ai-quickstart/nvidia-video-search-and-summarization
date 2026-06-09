@@ -4,12 +4,17 @@
 
 The VSS Blueprint runs a video analytics pipeline that ingests video (file upload or RTSP live stream), captions individual frames using a Vision Language Model, and makes the content searchable via natural language.
 
-| Component | Image | GPU | Purpose |
-|-----------|-------|-----|---------|
-| **vss** | NVCF chart | 1 | Core pipeline + VLM (Cosmos-Reason2-8B) |
-| **nim-llm** (NIM Operator) | `nvcr.io/nim/meta/llama-3.1-8b-instruct` | 1 | LLM inference via NIMService |
-| **nemo-embedding** (NIM Operator) | `nvcr.io/nim/nvidia/llama-3.2-nv-embedqa-1b-v2` | 1 | Vector embedding via NIMService |
-| **nemo-rerank** (NIM Operator) | `nvcr.io/nim/nvidia/llama-3.2-nv-rerankqa-1b-v2` | 1 | Document reranking via NIMService |
+Two deployment paths are available for the NIM inference models:
+
+1. **NIM Operator** (default) — uses NVIDIA's proprietary NIM containers managed via NIMCache + NIMService CRs. Requires NGC API key and NIM Operator installed.
+2. **vLLM** (opt-in) — serves the same NVIDIA models via RHOAI's KServe platform using open weights from HuggingFace. Requires RHOAI with KServe installed.
+
+| Component | NIM Operator Image | vLLM Model (HuggingFace) | GPU | Purpose |
+|-----------|-------------------|--------------------------|-----|---------|
+| **vss** | NVCF chart | — | 1 | Core pipeline + VLM (Cosmos-Reason2-8B) |
+| **nim-llm** | `nvcr.io/nim/meta/llama-3.1-8b-instruct` | `meta-llama/Llama-3.1-8B-Instruct` | 1 | LLM inference |
+| **nemo-embedding** | `nvcr.io/nim/nvidia/llama-3.2-nv-embedqa-1b-v2` | `nvidia/llama-3.2-nv-embedqa-1b-v2` | 1 | Vector embedding |
+| **nemo-rerank** | `nvcr.io/nim/nvidia/llama-3.2-nv-rerankqa-1b-v2` | `nvidia/llama-3.2-nv-rerankqa-1b-v2` | 1 | Document reranking |
 | **milvus** | NVCF subchart | 0 | Vector database |
 | **elasticsearch** | NVCF subchart | 0 | Search engine |
 | **arango-db** | NVCF subchart | 0 | Graph database |
@@ -68,15 +73,6 @@ Validated on OpenShift 4.19 on AWS with `g6e.2xlarge` (1× L40S 46 GB) and `p4d.
 > **Running with the upstream 70B LLM:** Requires 8 GPUs minimum (4 for LLM tensor
 > parallelism on a single node + 2 for VLM + 1 embedding + 1 rerank) with NVIDIA A100
 > 80GB or higher. Update `values-openshift.yaml` accordingly.
-
-## Deployment Files
-
-All OpenShift customizations are codified in the `deploy/helm/` directory alongside the upstream chart:
-
-- **`values-openshift.yaml`** — Helm values overlay for OpenShift. Contains all OpenShift-specific overrides (security contexts, tolerations, secrets, model config, storage).
-- **`templates/openshift.yaml`** (inside the chart) — Helm template gated by `openshift.enabled`. Creates custom SCC, RoleBinding, Route, and secrets.
-- **`templates/nim-llm.yaml`**, **`nim-embedding.yaml`**, **`nim-reranking.yaml`** (inside the chart) — NIMCache + NIMService templates for each NIM, gated by the NIM Operator CRD.
-- **`nvidia-blueprint-vss-2.4.1.tgz`** — The packaged upstream Helm chart with the `openshift.enabled` flag and NIM Operator support added to `values.yaml`.
 
 ## Prerequisites
 
@@ -252,6 +248,8 @@ oc secrets link nim-cache-sa ngc-docker-reg-secret --for=pull -n $NAMESPACE
 
 ### 3. Install the Chart
 
+#### Option A: NIM Operator (default)
+
 ```bash
 helm upgrade --install vss deploy/helm/nvidia-blueprint-vss-2.4.1.tgz \
   -n $NAMESPACE \
@@ -263,14 +261,6 @@ helm upgrade --install vss deploy/helm/nvidia-blueprint-vss-2.4.1.tgz \
 
 > If you pre-created secrets in step 2, omit the `--set` flags above.
 
-> **If you changed the LLM model** (e.g. from 70B to 8B), add the following `--set` flags to override the guardrails model accordingly:
-> ```bash
-> --set "vss.configs.guardrails_config\.yaml.models[0].engine=nim" \
-> --set-string "vss.configs.guardrails_config\.yaml.models[0].model=$LLM_MODEL" \
-> --set "vss.configs.guardrails_config\.yaml.models[0].parameters.base_url=http://llm-nim-svc:8000/v1" \
-> --set "vss.configs.guardrails_config\.yaml.models[0].type=main"
-> ```
-
 This creates:
 - 3 × NIMCache (model download and caching)
 - 3 × NIMService (inference servers)
@@ -280,6 +270,45 @@ This creates:
 - All required secrets (NGC registry, NGC API key, HF token, ArangoDB, MinIO, Neo4j)
 - VSS application and supporting services (Milvus, Neo4j, ArangoDB, Elasticsearch, etc.)
 - Subchart NIM Deployments are disabled (`nim-llm.enabled: false`, etc.)
+
+#### Option B: vLLM (open weights via RHOAI KServe)
+
+Requires RHOAI with KServe installed on the cluster.
+
+```bash
+# Create the HuggingFace secret for model downloads
+kubectl create secret generic huggingface-secret \
+  --from-literal=HF_TOKEN=$HF_TOKEN -n $NAMESPACE
+
+helm upgrade --install vss deploy/helm/nvidia-blueprint-vss-2.4.1.tgz \
+  -n $NAMESPACE \
+  -f deploy/helm/values-openshift.yaml \
+  --set "vllm.nim-llm.enabled=true" \
+  --set "vllm.nemo-embedding.enabled=true" \
+  --set "vllm.nemo-rerank.enabled=true" \
+  --set nvcf.dockerRegSecrets[0].password="$NGC_API_KEY" \
+  --set nvcf.additionalSecrets[0].stringData.value="$NGC_API_KEY" \
+  --set nvcf.additionalSecrets[1].stringData.value="$HF_TOKEN"
+```
+
+This creates:
+- 1 × ServingRuntime (vLLM, RHOAI-aligned, port 8080)
+- 3 × InferenceService (LLM, embedding, reranking)
+- 3 × Companion Service (NIM-compatible names on port 8000→8080)
+- 1 × OpenShift Route (external UI access)
+- 1 × Custom SCC (`vss-nim`)
+- All required secrets
+- VSS application and supporting services (Milvus, Neo4j, ArangoDB, Elasticsearch, etc.)
+
+> **Guardrails model override (both options):** If you are deploying a different LLM
+> than the base chart default (e.g. 8B instead of 70B), add the following `--set` flags
+> to either install command above:
+> ```bash
+> --set "vss.configs.guardrails_config\.yaml.models[0].engine=nim" \
+> --set-string "vss.configs.guardrails_config\.yaml.models[0].model=meta/llama-3.1-8b-instruct" \
+> --set "vss.configs.guardrails_config\.yaml.models[0].parameters.base_url=http://llm-nim-svc:8000/v1" \
+> --set "vss.configs.guardrails_config\.yaml.models[0].type=main"
+> ```
 
 ### 4. Monitor Model Downloads
 

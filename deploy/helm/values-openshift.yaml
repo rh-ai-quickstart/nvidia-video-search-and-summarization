@@ -10,8 +10,9 @@
 #
 # This file enables OpenShift-specific resources (Route, SCC, ServiceAccount,
 # credential Secrets) and switches from subchart Deployments to NIM Operator
-# managed services.  Cluster-specific values (tolerations, storageClass, NGC
-# keys) should be passed via --set at install time.
+# managed services or vLLM via RHOAI's KServe platform. Cluster-specific
+# values (tolerations, storageClass, NGC keys) should be passed via --set
+# at install time.
 
 # ---------------------------------------------------------------------------
 # NGC and HF secrets — uses NVIDIA's built-in nvcf mechanism
@@ -43,8 +44,8 @@ openshift:
     tls:
       termination: edge
       insecureEdgeTerminationPolicy: Redirect
-  # Creates a custom SCC (vss-nim) that allows runAsUser: 0 (needed by
-  # arango-db) and skips recursive SELinux relabeling on NIM model PVCs.
+  # Grants the anyuid SCC to app service accounts (needed by arango-db,
+  # milvus-minio which run as root).
   scc:
     create: true
   # Service credential secrets (arango, minio, neo4j)
@@ -244,4 +245,91 @@ nimOperator:
         periodSeconds: 30
         failureThreshold: 120
 
+# ---------------------------------------------------------------------------
+# vLLM deployment — serves NVIDIA models via RHOAI's KServe platform using
+# open weights from HuggingFace.
+# To use: enable vllm models and disable nimOperator.
+# ---------------------------------------------------------------------------
+vllm:
+  servingRuntime:
+    name: vllm-serving-runtime
+    image:
+      repository: vllm/vllm-openai
+      tag: "v0.22.0"
+    secrets:
+      huggingFaceToken: "huggingface-secret"
 
+  nim-llm:
+    enabled: false
+    replicas: 1
+    service:
+      name: "llm-nim-svc"
+    model:
+      name: "meta-llama/Llama-3.1-8B-Instruct"
+      servedName: "meta/llama-3.1-8b-instruct"
+      maxModelLen: ""
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: "32Gi"
+        cpu: "4"
+      requests:
+        nvidia.com/gpu: 1
+        memory: "16Gi"
+        cpu: "2"
+    trustRemoteCode: false
+    extraArgs: []
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+  nemo-embedding:
+    enabled: false
+    replicas: 1
+    service:
+      name: "nemo-embedding-embedding-deployment-embedding-service"
+    model:
+      name: "nvidia/llama-3.2-nv-embedqa-1b-v2"
+      servedName: "nvidia/llama-3.2-nv-embedqa-1b-v2"
+      task: ""
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: "16Gi"
+        cpu: "4"
+      requests:
+        nvidia.com/gpu: 1
+        memory: "8Gi"
+        cpu: "2"
+    trustRemoteCode: true
+    extraArgs: []
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+  nemo-rerank:
+    enabled: false
+    replicas: 1
+    service:
+      name: "nemo-rerank-ranking-deployment-ranking-service"
+    model:
+      name: "nvidia/llama-3.2-nv-rerankqa-1b-v2"
+      servedName: "nvidia/llama-3.2-nv-rerankqa-1b-v2"
+      task: ""
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        memory: "16Gi"
+        cpu: "4"
+      requests:
+        nvidia.com/gpu: 1
+        memory: "8Gi"
+        cpu: "2"
+    trustRemoteCode: true
+    extraArgs: []
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
